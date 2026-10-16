@@ -1,11 +1,17 @@
 name: Release Zotero bridge
 
-# Signs one version of the Meridian Zotero Bridge with Mozilla (unlisted channel), publishes the signed
-# .xpi as a release on this repository, and adds the version to update.json. Zotero reads update.json to
-# offer updates. Run it by hand: Actions > Release Zotero bridge > Run workflow.
+# Signs one version of the Meridian Zotero Bridge with Mozilla (unlisted channel), checks the signed file
+# against the source commit, publishes it as a release on this repository, and adds the version to
+# update.json. Zotero reads update.json to offer updates. Run it by hand:
+# Actions > Release Zotero bridge > Run workflow.
 #
-# Mozilla refuses a version number that has already been submitted, and this job has no state of its
-# own, so the job refuses a version that Mozilla or this repository already has.
+# Mozilla refuses a version number that has already been submitted, and this job keeps no state of its own,
+# so the job refuses a version that Mozilla or this repository already has.
+#
+# Recovery: if Mozilla signs the version but a later step fails, the version number is used up. Do not
+# bump it just yet. Delete the release v<version> if one was created, then run
+# `python -m meridian zotero sign-plugin --fetch` in a Meridian checkout at the source commit. That reads
+# Mozilla's approved file and stores it only if it matches the source. Publish from there, or bump the version.
 
 on:
   workflow_dispatch:
@@ -34,12 +40,15 @@ jobs:
       VERSION: ${{ inputs.version }}
       ADDON_ID: meridian-zotero@usemeridian.us
       ASSET: meridian-zotero@usemeridian.us-${{ inputs.version }}.xpi
+      SOURCE_REF: ${{ inputs.source_ref }}
     steps:
       - name: Work folders
         run: echo "STATE_DIR=$RUNNER_TEMP/zotero-bridge-state" >> "$GITHUB_ENV"
 
-      - name: Check out this repository (the update channel)
+      - name: Check out this repository on main (the update channel)
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: main
 
       - name: Check out Meridian at the source commit
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -47,6 +56,18 @@ jobs:
           repository: meridianmcp/Meridian
           ref: ${{ inputs.source_ref }}
           path: meridian-src
+          persist-credentials: false
+
+      - name: Record the full source commit
+        working-directory: meridian-src
+        run: |
+          sha=$(git rev-parse HEAD)
+          if ! printf '%s' "$sha" | grep -Eq '^[0-9a-f]{40}$'; then
+            echo "Could not resolve the source commit to a full SHA: $sha" >&2
+            exit 1
+          fi
+          echo "SOURCE_SHA=$sha" >> "$GITHUB_ENV"
+          echo "Source commit: $sha"
 
       - name: Set up pixi
         uses: prefix-dev/setup-pixi@ba3bb36eb2066252b2363392b7739741bb777659 # v0.8.1
@@ -71,13 +92,17 @@ jobs:
           manifest = json.loads(Path("extensions/zotero-bridge/manifest.json").read_text(encoding="utf-8"))
           if manifest["version"] != version:
               sys.exit(f"manifest.json says {manifest['version']} but the input is {version}")
-          key, secret = amo.read_credentials(dict(os.environ))
-          token = amo.make_jwt(key, secret, time.time())
+          credentials = amo.read_credentials(dict(os.environ))
+          if credentials is None:
+              sys.exit("The WEB_EXT_API_KEY and WEB_EXT_API_SECRET repository secrets are not set. Nothing was submitted.")
+          token = amo.make_jwt(credentials[0], credentials[1], time.time())
           status, _ = amo.urllib_transport(
               amo.version_detail_url(sign.PLUGIN_ADDON_ID, version), amo._request_headers(token)
           )
+          if status == 200:
+              sys.exit(f"Mozilla already has version {version}. Bump the version; nothing was submitted.")
           if status != 404:
-              sys.exit(f"Mozilla already has version {version} (HTTP {status}). Bump the version; nothing was submitted.")
+              sys.exit(f"Could not check Mozilla for version {version} (HTTP {status}). Nothing was submitted.")
           print(f"Mozilla has no version {version}; continuing")
           PY
 
@@ -99,25 +124,50 @@ jobs:
           export MERIDIAN_LOCAL_RUNNER_STATE_DIR="$STATE_DIR"
           pixi run python -m meridian zotero sign-plugin --timeout-minutes 60
 
-      - name: Publish the signed file as a release
-        env:
-          GH_TOKEN: ${{ github.token }}
+      - name: Check the signed file against the source before publishing
+        working-directory: meridian-src
         run: |
           found=$(find "$STATE_DIR" -type f -name "$ASSET" -path '*signed*' | head -n 1)
           if [ -z "$found" ]; then
             echo "The signed file $ASSET was not found under $STATE_DIR" >&2
             exit 1
           fi
+          SIGNED_PATH="$found" pixi run python - <<'PY'
+          import os, sys
+          from pathlib import Path
+          from meridian import zotero_plugin_sign as sign
+
+          data = Path(os.environ["SIGNED_PATH"]).read_bytes()
+          snapshot = dict(sign._packed_snapshot(Path("extensions/zotero-bridge")))
+          problem = sign.verify_fetched_signed_file(
+              data,
+              expected_id=sign.PLUGIN_ADDON_ID,
+              expected_version=os.environ["VERSION"],
+              current_source_packed=snapshot,
+          )
+          if problem:
+              sys.exit(f"The Mozilla-signed file does not match the source commit: {problem}")
+          print("The Mozilla-signed file matches the source commit")
+          PY
+
+      - name: Publish the signed file as a release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          found=$(find "$STATE_DIR" -type f -name "$ASSET" -path '*signed*' | head -n 1)
           mkdir -p "$RUNNER_TEMP/release"
           cp "$found" "$RUNNER_TEMP/release/$ASSET"
           echo "SHA256=$(sha256sum "$RUNNER_TEMP/release/$ASSET" | cut -d' ' -f1)" >> "$GITHUB_ENV"
           gh release create "v$VERSION" "$RUNNER_TEMP/release/$ASSET" \
             --repo "$GITHUB_REPOSITORY" \
             --title "Zotero bridge $VERSION" \
-            --notes "Mozilla-signed (unlisted) build of the Meridian Zotero Bridge, version $VERSION. Source commit: ${{ inputs.source_ref }}."
+            --notes "Mozilla-signed (unlisted) build of the Meridian Zotero Bridge, version $VERSION. Source commit: $SOURCE_SHA (requested as $SOURCE_REF)."
 
       - name: Add the version to update.json and push
         run: |
+          set -euo pipefail
+          url="https://github.com/$GITHUB_REPOSITORY/releases/download/v$VERSION/$ASSET"
+          curl -fsSIL -o /dev/null "$url"
           python3 - <<'PY'
           import json, os, pathlib
 
@@ -151,6 +201,8 @@ jobs:
 
       - name: Check the public files answer
         run: |
-          curl -fsSL "https://raw.githubusercontent.com/$GITHUB_REPOSITORY/main/update.json" \
-            | python3 -c 'import json, sys; d = json.load(sys.stdin); print([u["version"] for u in d["addons"][sys.argv[1]]["updates"]])' "$ADDON_ID"
-          curl -fsSIL "https://github.com/$GITHUB_REPOSITORY/releases/download/v$VERSION/$ASSET" | grep -i '^HTTP' | tail -n 1
+          set -euo pipefail
+          curl -fsSL "https://raw.githubusercontent.com/$GITHUB_REPOSITORY/main/update.json" -o /tmp/update.json
+          python3 -c 'import json, sys; d = json.load(open("/tmp/update.json")); print([u["version"] for u in d["addons"][sys.argv[1]]["updates"]])' "$ADDON_ID"
+          curl -fsSIL -o /dev/null "https://github.com/$GITHUB_REPOSITORY/releases/download/v$VERSION/$ASSET"
+          echo "Public files answer."
