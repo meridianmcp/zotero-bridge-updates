@@ -1,0 +1,19 @@
+{
+  "addons": {
+    "meridian-zotero@usemeridian.us": {
+      "updates": [
+        {
+          "version": "0.1.2",
+          "update_link": "https://github.com/meridianmcp/zotero-bridge-updates/releases/download/v0.1.2/meridian-zotero@usemeridian.us-0.1.2.xpi",
+          "update_hash": "sha256:5add706e08034d5de6bbde4458ef41e2f25ab7e4502fc778ddbfd95fa076ad34",
+          "applications": {
+            "zotero": {
+              "strict_min_version": "8.0",
+              "strict_max_version": "99.*"
+            }
+          }
+        }
+      ]
+    }
+  }
+}
