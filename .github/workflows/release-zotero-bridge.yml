@@ -34,8 +34,10 @@ jobs:
       VERSION: ${{ inputs.version }}
       ADDON_ID: meridian-zotero@usemeridian.us
       ASSET: meridian-zotero@usemeridian.us-${{ inputs.version }}.xpi
-      STATE_DIR: ${{ runner.temp }}/zotero-bridge-state
     steps:
+      - name: Work folders
+        run: echo "STATE_DIR=$RUNNER_TEMP/zotero-bridge-state" >> "$GITHUB_ENV"
+
       - name: Check out this repository (the update channel)
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
@@ -93,8 +95,9 @@ jobs:
         env:
           WEB_EXT_API_KEY: ${{ secrets.WEB_EXT_API_KEY }}
           WEB_EXT_API_SECRET: ${{ secrets.WEB_EXT_API_SECRET }}
-          MERIDIAN_LOCAL_RUNNER_STATE_DIR: ${{ env.STATE_DIR }}
-        run: pixi run python -m meridian zotero sign-plugin --timeout-minutes 60
+        run: |
+          export MERIDIAN_LOCAL_RUNNER_STATE_DIR="$STATE_DIR"
+          pixi run python -m meridian zotero sign-plugin --timeout-minutes 60
 
       - name: Publish the signed file as a release
         env:
