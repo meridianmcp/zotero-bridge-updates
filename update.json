@@ -3,6 +3,17 @@
     "meridian-zotero@usemeridian.us": {
       "updates": [
         {
+          "version": "0.1.4",
+          "update_link": "https://github.com/meridianmcp/zotero-bridge-updates/releases/download/v0.1.4/meridian-zotero@usemeridian.us-0.1.4.xpi",
+          "update_hash": "sha256:cf9e85d2374faf764b359b5af77371062c356060a144439e30c56ef3358802d7",
+          "applications": {
+            "zotero": {
+              "strict_min_version": "8.0",
+              "strict_max_version": "99.*"
+            }
+          }
+        },
+        {
           "version": "0.1.3",
           "update_link": "https://github.com/meridianmcp/zotero-bridge-updates/releases/download/v0.1.3/meridian-zotero@usemeridian.us-0.1.3.xpi",
           "update_hash": "sha256:ffe47917f4a208a5a4c36d1d6adfa3b3f4eabed44ef7df2b8f392b9b540c6a4d",
